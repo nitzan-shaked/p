@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from subprocess import CompletedProcess
 import sys
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from utils.path_utils import traverse_up_until_file, norm_path
 
@@ -32,12 +32,32 @@ class CompCtx:
         self._last_full_word_to_point = self._comp_words[self._n_words_to_point - 1]
 
         self._point_is_at_or_past_last_word = self._n_words_to_point == self._n_words
-        self._point_is_in_middle_of_word = self._last_word_to_point != self._last_full_word_to_point
-        self._point_is_exactly_at_end_of_word = self._comp_line_to_point.endswith(self._last_full_word_to_point)
+        self._point_is_in_middle_of_word = (
+            self._last_word_to_point != self._last_full_word_to_point
+        )
+        self._point_is_exactly_at_end_of_word = self._comp_line_to_point.endswith(
+            self._last_full_word_to_point
+        )
         self._point_is_past_end_of_word = (
             not self._point_is_in_middle_of_word
             and not self._point_is_exactly_at_end_of_word
         )
+
+    @property
+    def comp_words(self) -> Sequence[str]:
+        return self._comp_words
+
+    @property
+    def last_word_to_point(self) -> str:
+        return self._last_word_to_point
+
+    @property
+    def point_is_past_end_of_word(self) -> bool:
+        return self._point_is_past_end_of_word
+
+    @property
+    def point_is_exactly_at_end_of_word(self) -> bool:
+        return self._point_is_exactly_at_end_of_word
 
 
 class PantsCtx:
@@ -111,6 +131,11 @@ def shim_rewrite_arg(arg_str: str, ctx: PantsCtx) -> str:
     return "".join(out_parts)
 
 
+def complete(strs: Iterable[str]) -> None:
+    print("\n".join(strs))
+    sys.exit(0)
+
+
 def main() -> None:
 
     # get prog name
@@ -119,78 +144,60 @@ def main() -> None:
     do_complete = prog_name == "p_complete"
 
     # init
-    ctx = PantsCtx(do_complete=do_complete)
+    pants = PantsCtx(do_complete=do_complete)
 
     if do_shim:
         pants_args = tuple(
-            shim_rewrite_arg(arg_str, ctx)
+            shim_rewrite_arg(arg_str, pants)
             for arg_str in sys.argv[1:]
         )
-        print(str(ctx.pants_bin_path), *pants_args)
+        print(str(pants.pants_bin_path), *pants_args)
         sys.stdout.flush()
-        os.chdir(str(ctx.repo_root))
-        os.execl(str(ctx.pants_bin_name), ctx.pants_bin_name, *pants_args)
+        os.chdir(str(pants.repo_root))
+        os.execl(str(pants.pants_bin_name), pants.pants_bin_name, *pants_args)
 
     if do_complete:
-        comp_ctx = CompCtx()
-        comp_line = os.environ["COMP_LINE"]
-        comp_point = int(os.environ["COMP_POINT"])
-        comp_line_to_point = comp_line[:comp_point]
-
-        comp_words = shlex.split(comp_line)
-        comp_words_to_point = shlex.split(comp_line_to_point)
-        assert comp_words_to_point
-
-        # n_words = len(comp_words)
-        n_words_to_point = len(comp_words_to_point)
-        last_word_to_point = comp_words_to_point[-1]
-        last_full_word_to_point = comp_words[n_words_to_point - 1]
-
-        # point_is_at_or_past_last_word = n_words_to_point == n_words
-        point_is_in_middle_of_word = last_word_to_point != last_full_word_to_point
-        point_is_exactly_at_end_of_word = comp_line_to_point.endswith(last_full_word_to_point)
-        point_is_past_end_of_word = (
-            not point_is_in_middle_of_word
-            and not point_is_exactly_at_end_of_word
-        )
+        comp = CompCtx()
 
         if COMPLETE_GOAL:
-            help_all_proc = ctx.pants("help-all")
+            help_all_proc = pants.pants("help-all")
             if help_all_proc.returncode != 0:
-                ctx.fatal("help-all returned rc", help_all_proc.returncode)
+                pants.fatal("help-all returned rc", help_all_proc.returncode)
             help_all_json = json.loads(help_all_proc.stdout)
             name_to_goal_info: Mapping[str, Any] = help_all_json["name_to_goal_info"]
             assert isinstance(name_to_goal_info, Mapping)
 
             goal: str | None = None
             available_goals = set(name_to_goal_info.keys())
-            for arg_str in comp_words:
+            for arg_str in comp.comp_words:
                 if goal is None and arg_str in available_goals:
                     goal = arg_str
 
             # complete goal?
-            if goal is None and point_is_past_end_of_word:
-                print("\n".join(available_goals))
-                sys.exit(0)
+            if goal is None and comp.point_is_past_end_of_word:
+                complete(available_goals)
 
             if (
                 goal is None
-                and point_is_exactly_at_end_of_word
-                and not last_word_to_point.startswith(("-", "/", "."))
-                and ":" not in last_word_to_point
-                and "/" not in last_word_to_point
+                and comp.point_is_exactly_at_end_of_word
+                and not comp.last_word_to_point.startswith(("-", "/", "."))
+                and ":" not in comp.last_word_to_point
+                and "/" not in comp.last_word_to_point
             ):
-                print("\n".join(g for g in available_goals if g.startswith(last_word_to_point)))
-                sys.exit(0)
+                complete(
+                    g
+                    for g in available_goals
+                    if g.startswith(comp.last_word_to_point)
+                )
 
         # complete target name?
-        if point_is_exactly_at_end_of_word and ":" in last_word_to_point:
-            repo_rel_path, target_name = ctx.parse_rel_target(last_word_to_point)
-            if not (ctx.repo_root / repo_rel_path / "BUILD").is_file():
-                ctx.fatal(f"no BUILD in {ctx.repo_root / repo_rel_path}")
-            peek_proc = ctx.pants("peek", f"{repo_rel_path}:")
+        if comp.point_is_exactly_at_end_of_word and ":" in comp.last_word_to_point:
+            repo_rel_path, target_name = pants.parse_rel_target(comp.last_word_to_point)
+            if not (pants.repo_root / repo_rel_path / "BUILD").is_file():
+                pants.fatal(f"no BUILD in {pants.repo_root / repo_rel_path}")
+            peek_proc = pants.pants("peek", f"{repo_rel_path}:")
             if peek_proc.returncode != 0:
-                ctx.fatal("peek returned rc", peek_proc.returncode)
+                pants.fatal("peek returned rc", peek_proc.returncode)
             peek_json = json.loads(peek_proc.stdout)
             peek_targets = tuple(
                 (str(j["address"]), str(j["target_type"]))
@@ -202,11 +209,10 @@ def main() -> None:
                 for target_addr, _ in peek_targets
                 if target_addr.startswith(desired_prefix)
             )
-            print("\n".join(
+            complete(
                 target_addr.split(":", 1)[1]
                 for target_addr in completion_targets
-            ))
-            sys.exit(0)
+            )
 
 
 if __name__ == "__main__":
