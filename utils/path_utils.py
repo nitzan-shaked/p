@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Callable
 
 
 def norm_path(path: Path) -> Path:
@@ -24,35 +23,10 @@ def norm_path(path: Path) -> Path:
     return Path(*prefix_parts, *norm_parts)
 
 
-def norm_check_path(
-    path: Path,
-    *,
-    is_dir: bool | None = None,
-    is_file: bool | None = None,
-    is_rel_sub: bool | None = None,
-) -> Path:
-    if is_dir and is_file:
-        raise ValueError("conflicting is_dir and is_file")
-    path = norm_path(path)
-    if is_rel_sub:
-        is_rel = not path.anchor
-        is_sub = (not path.parts) or path.parts[0] != ".."
-        if not (is_rel and is_sub):
-            raise ValueError(f"path {path} must be relative and sub-path")
-    if (is_dir or is_file) and not path.exists():
-        raise ValueError(f"path {path} must exist")
-    if is_dir and not path.is_dir():
-        raise ValueError(f"path {path} must be a directory")
-    if is_file and not path.is_file():
-        raise ValueError(f"path {path} must be a file")
-    return path
-
-
 def traverse_up_until_file(
     from_path: Path,
     until_filename: str,
     stop_at: Path | None = None,
-    stop_pred: Callable[[Path], bool] | None = None,
 ) -> Path | None:
     if stop_at is not None:
         if not stop_at.exists():
@@ -66,8 +40,6 @@ def traverse_up_until_file(
         if maybe_path.is_file():
             return maybe_path
         if stop_at is not None and curr_path == stop_at:
-            return None
-        if stop_pred is not None and stop_pred(curr_path):
             return None
         if curr_path.parent == curr_path:
             return None

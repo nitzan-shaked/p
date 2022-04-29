@@ -2,68 +2,42 @@
 
 from __future__ import annotations
 import json
-from pathlib import Path
 import os
+from pathlib import Path
 import shlex
+import subprocess
 from subprocess import CompletedProcess
 import sys
 from typing import Any, Mapping
 
 from utils.path_utils import traverse_up_until_file, norm_path
-from utils.subproc_utils import subproc
 
 
-do_shim: bool = False
-do_complete: bool = False
+COMPLETE_GOAL = False
 
 
-def fatal(*args: Any, **kwargs: Any) -> None:
-    if not do_complete:
-        print(*args, file=sys.stderr, **kwargs)
-    sys.exit(-1)
+class CompCtx:
+    def __init__(self) -> None:
+        self._comp_line = os.environ["COMP_LINE"]
+        self._comp_point = int(os.environ["COMP_POINT"])
+        self._comp_line_to_point = self._comp_line[:self._comp_point]
 
+        self._comp_words = shlex.split(self._comp_line)
+        self._comp_words_to_point = shlex.split(self._comp_line_to_point)
+        assert self._comp_words_to_point
 
-def parse_rel_target(
-    s: str, *,
-    cwd: Path,
-    repo_root: Path,
-) -> tuple[Path, str]:
-    assert ":" in s
-    path_str, target_name = s.split(":", 1)
-    if path_str.startswith("//"):
-        abs_path = repo_root / path_str[2:]
-    else:
-        path = Path(path_str)
-        abs_path = path if path.is_absolute() else cwd / path
-    abs_path = norm_path(abs_path)
-    if not abs_path.is_relative_to(repo_root):
-        fatal(f"{abs_path} is not in repo {repo_root}")
-    repo_rel_path = abs_path.relative_to(repo_root)
-    return repo_rel_path, target_name
+        self._n_words = len(self._comp_words)
+        self._n_words_to_point = len(self._comp_words_to_point)
+        self._last_word_to_point = self._comp_words_to_point[-1]
+        self._last_full_word_to_point = self._comp_words[self._n_words_to_point - 1]
 
-
-def rewrite_arg(
-    arg_str: str, *,
-    cwd: Path,
-    repo_root: Path,
-) -> str:
-    out_parts: list[str] = []
-
-    if arg_str.startswith("-") and "=" in arg_str:
-        opt_str, arg_str = arg_str.split("=", 1)
-        out_parts.append(f"{opt_str}=")
-
-    if ":" in arg_str:
-        repo_rel_path, arg_str = parse_rel_target(
-            arg_str,
-            cwd=cwd,
-            repo_root=repo_root,
+        self._point_is_at_or_past_last_word = self._n_words_to_point == self._n_words
+        self._point_is_in_middle_of_word = self._last_word_to_point != self._last_full_word_to_point
+        self._point_is_exactly_at_end_of_word = self._comp_line_to_point.endswith(self._last_full_word_to_point)
+        self._point_is_past_end_of_word = (
+            not self._point_is_in_middle_of_word
+            and not self._point_is_exactly_at_end_of_word
         )
-        out_parts.append(f"{repo_rel_path}:")
-
-    out_parts.append(arg_str)
-
-    return "".join(out_parts)
 
 
 class PantsCtx:
@@ -73,54 +47,92 @@ class PantsCtx:
         self._pants_bin_name = os.environ.get("PANTS_BIN_NAME", "pants")
         pants_bin_path = traverse_up_until_file(self._cwd, self._pants_bin_name)
         if pants_bin_path is None:
-            fatal("error: cannot find pants binary")
+            self.fatal("error: cannot find pants binary")
         assert pants_bin_path is not None
         self._pants_bin_path = pants_bin_path
         self._repo_root = self._pants_bin_path.parent
 
+    @property
+    def pants_bin_name(self) -> str:
+        return self._pants_bin_name
+
+    @property
+    def cwd(self) -> Path:
+        return self._cwd
+
+    @property
+    def pants_bin_path(self) -> Path:
+        return self._pants_bin_path
+
+    @property
+    def repo_root(self) -> Path:
+        return self._repo_root
+
+    def parse_rel_target(self, s: str) -> tuple[Path, str]:
+        assert ":" in s
+        path_str, target_name = s.split(":", 1)
+        if path_str.startswith("//"):
+            abs_path = self._repo_root / path_str[2:]
+        else:
+            path = Path(path_str)
+            abs_path = path if path.is_absolute() else self._cwd / path
+        abs_path = norm_path(abs_path)
+        if not abs_path.is_relative_to(self._repo_root):
+            self.fatal(f"{abs_path} is not in repo {self._repo_root}")
+        repo_rel_path = abs_path.relative_to(self._repo_root)
+        return repo_rel_path, target_name
+
     def pants(self, *args: str) -> CompletedProcess[str]:
-        return subproc(self._repo_root, (str(self._pants_bin_path), *args))
+        return subprocess.run(
+            [str(self._pants_bin_path)] + list(args),
+            cwd=self._repo_root,
+            capture_output=True,
+            text=True,
+        )
+
+    def fatal(self, *args: Any, **kwargs: Any) -> None:
+        if not self._do_complete:
+            print(*args, file=sys.stderr, **kwargs)
+        sys.exit(-1)
 
 
+def shim_rewrite_arg(arg_str: str, ctx: PantsCtx) -> str:
+    out_parts: list[str] = []
+
+    if arg_str.startswith("-") and "=" in arg_str:
+        opt_str, arg_str = arg_str.split("=", 1)
+        out_parts.append(f"{opt_str}=")
+
+    if ":" in arg_str:
+        repo_rel_path, arg_str = ctx.parse_rel_target(arg_str)
+        out_parts.append(f"{repo_rel_path}:")
+
+    out_parts.append(arg_str)
+    return "".join(out_parts)
 
 
 def main() -> None:
 
     # get prog name
-    prog_path = Path(sys.argv[0])
-    prog_name = prog_path.name
+    prog_name = Path(sys.argv[0]).name
+    do_shim = prog_name == "p"
+    do_complete = prog_name == "p_complete"
 
-    global do_shim, do_complete
-    if prog_name == "p":
-        do_shim = True
-    elif prog_name == "p_complete":
-        do_complete = True
-    else:
-        fatal("unknown name", prog_name)
-
-    # init: find cwd, pants bin, and repo root
-    cwd = Path.cwd()
-    pants_bin_name = os.environ.get("PANTS_BIN_NAME", "pants")
-    pants_bin_path = traverse_up_until_file(cwd, pants_bin_name)
-    if pants_bin_path is None:
-        fatal("error: cannot find pants binary")
-    assert pants_bin_path is not None
-    repo_root = pants_bin_path.parent
-
-    def pants(*args: str) -> CompletedProcess[str]:
-        return subproc(repo_root, (str(pants_bin_path), *args))
+    # init
+    ctx = PantsCtx(do_complete=do_complete)
 
     if do_shim:
         pants_args = tuple(
-            rewrite_arg(arg_str, cwd=cwd, repo_root=repo_root)
+            shim_rewrite_arg(arg_str, ctx)
             for arg_str in sys.argv[1:]
         )
-        print(str(pants_bin_path), *pants_args)
+        print(str(ctx.pants_bin_path), *pants_args)
         sys.stdout.flush()
-        os.chdir(str(repo_root))
-        os.execl(str(pants_bin_name), pants_bin_name, *pants_args)
+        os.chdir(str(ctx.repo_root))
+        os.execl(str(ctx.pants_bin_name), ctx.pants_bin_name, *pants_args)
 
     if do_complete:
+        comp_ctx = CompCtx()
         comp_line = os.environ["COMP_LINE"]
         comp_point = int(os.environ["COMP_POINT"])
         comp_line_to_point = comp_line[:comp_point]
@@ -142,41 +154,43 @@ def main() -> None:
             and not point_is_exactly_at_end_of_word
         )
 
-        help_all_proc = pants("help-all")
-        if help_all_proc.returncode != 0:
-            fatal("help-all returned rc", help_all_proc.returncode)
-        help_all_json = json.loads(help_all_proc.stdout)
-        # help_all_json = json.loads(open("/tmp/x").read())
-        name_to_goal_info: Mapping[str, Any] = help_all_json["name_to_goal_info"]
-        assert isinstance(name_to_goal_info, Mapping)
+        if COMPLETE_GOAL:
+            help_all_proc = ctx.pants("help-all")
+            if help_all_proc.returncode != 0:
+                ctx.fatal("help-all returned rc", help_all_proc.returncode)
+            help_all_json = json.loads(help_all_proc.stdout)
+            name_to_goal_info: Mapping[str, Any] = help_all_json["name_to_goal_info"]
+            assert isinstance(name_to_goal_info, Mapping)
 
-        goal: str | None = None
-        available_goals = set(name_to_goal_info.keys())
-        for arg_str in comp_words:
-            if goal is None and arg_str in available_goals:
-                goal = arg_str
+            goal: str | None = None
+            available_goals = set(name_to_goal_info.keys())
+            for arg_str in comp_words:
+                if goal is None and arg_str in available_goals:
+                    goal = arg_str
 
-        # complete goal?
-        if goal is None:
-            if point_is_past_end_of_word:
+            # complete goal?
+            if goal is None and point_is_past_end_of_word:
                 print("\n".join(available_goals))
                 sys.exit(0)
-            if point_is_exactly_at_end_of_word:
+
+            if (
+                goal is None
+                and point_is_exactly_at_end_of_word
+                and not last_word_to_point.startswith(("-", "/", "."))
+                and ":" not in last_word_to_point
+                and "/" not in last_word_to_point
+            ):
                 print("\n".join(g for g in available_goals if g.startswith(last_word_to_point)))
                 sys.exit(0)
 
         # complete target name?
         if point_is_exactly_at_end_of_word and ":" in last_word_to_point:
-            repo_rel_path, target_name = parse_rel_target(
-                last_word_to_point,
-                cwd=cwd,
-                repo_root=repo_root,
-            )
-            if not (repo_root / repo_rel_path / "BUILD").is_file():
-                fatal(f"no BUILD in {repo_root / repo_rel_path}")
-            peek_proc = pants("peek", f"{repo_rel_path}:")
+            repo_rel_path, target_name = ctx.parse_rel_target(last_word_to_point)
+            if not (ctx.repo_root / repo_rel_path / "BUILD").is_file():
+                ctx.fatal(f"no BUILD in {ctx.repo_root / repo_rel_path}")
+            peek_proc = ctx.pants("peek", f"{repo_rel_path}:")
             if peek_proc.returncode != 0:
-                fatal("peek returned rc", peek_proc.returncode)
+                ctx.fatal("peek returned rc", peek_proc.returncode)
             peek_json = json.loads(peek_proc.stdout)
             peek_targets = tuple(
                 (str(j["address"]), str(j["target_type"]))
