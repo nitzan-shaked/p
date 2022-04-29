@@ -10,11 +10,60 @@ from subprocess import CompletedProcess
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-from utils.path_utils import traverse_up_until_file, norm_path
+
+###############################################################################
+##
+## PATH UTILS
+##
+###############################################################################
+
+def norm_path(path: Path) -> Path:
+    prefix_parts: list[str] = []
+    parts = list(path.parts)
+    if path.anchor:
+        prefix_parts.append(parts.pop(0))
+
+    norm_parts: list[str] = []
+    for part in parts:
+        assert part not in ("", ".")  # shouldn't happen with Path.parts
+        if part == ".." and norm_parts and norm_parts[-1] != "..":
+            norm_parts.pop()
+        else:
+            norm_parts.append(part)
+    if path.root:  # remove leading ".."'s
+        while norm_parts and norm_parts[0] == "..":
+            norm_parts.pop(0)
+    return Path(*prefix_parts, *norm_parts)
 
 
-COMPLETE_GOAL = False
+def traverse_up_until_file(
+    from_path: Path,
+    until_filename: str,
+    stop_at: Path | None = None,
+) -> Path | None:
+    if stop_at is not None:
+        if not stop_at.exists():
+            raise ValueError(f"path {stop_at} does not exist")
+        if not stop_at.is_dir():
+            raise ValueError(f"path {stop_at} must be a directory")
 
+    curr_path = from_path
+    while True:
+        maybe_path = curr_path / until_filename
+        if maybe_path.is_file():
+            return maybe_path
+        if stop_at is not None and curr_path == stop_at:
+            return None
+        if curr_path.parent == curr_path:
+            return None
+        curr_path = curr_path.parent  # pragma: no cover
+
+
+###############################################################################
+##
+## COMPLETION UTILS
+##
+###############################################################################
 
 class CompCtx:
     def __init__(self) -> None:
@@ -59,6 +108,12 @@ class CompCtx:
     def point_is_exactly_at_end_of_word(self) -> bool:
         return self._point_is_exactly_at_end_of_word
 
+
+###############################################################################
+##
+## PANTS
+##
+###############################################################################
 
 class PantsCtx:
     def __init__(self, *, do_complete: bool) -> None:
@@ -116,6 +171,15 @@ class PantsCtx:
         sys.exit(-1)
 
 
+###############################################################################
+##
+## MAIN
+##
+###############################################################################
+
+COMPLETE_GOAL = False
+
+
 def shim_rewrite_arg(arg_str: str, ctx: PantsCtx) -> str:
     out_parts: list[str] = []
 
@@ -131,19 +195,17 @@ def shim_rewrite_arg(arg_str: str, ctx: PantsCtx) -> str:
     return "".join(out_parts)
 
 
-def complete(strs: Iterable[str]) -> None:
+def output_completions(strs: Iterable[str]) -> None:
     print("\n".join(strs))
     sys.exit(0)
 
 
 def main() -> None:
 
-    # get prog name
     prog_name = Path(sys.argv[0]).name
     do_shim = prog_name == "p"
     do_complete = prog_name == "p_complete"
 
-    # init
     pants = PantsCtx(do_complete=do_complete)
 
     if do_shim:
@@ -154,7 +216,7 @@ def main() -> None:
         print(str(pants.pants_bin_path), *pants_args)
         sys.stdout.flush()
         os.chdir(str(pants.repo_root))
-        os.execl(str(pants.pants_bin_name), pants.pants_bin_name, *pants_args)
+        os.execl(pants.pants_bin_name, pants.pants_bin_name, *pants_args)
 
     if do_complete:
         comp = CompCtx()
@@ -175,7 +237,7 @@ def main() -> None:
 
             # complete goal?
             if goal is None and comp.point_is_past_end_of_word:
-                complete(available_goals)
+                output_completions(available_goals)
 
             if (
                 goal is None
@@ -184,7 +246,7 @@ def main() -> None:
                 and ":" not in comp.last_word_to_point
                 and "/" not in comp.last_word_to_point
             ):
-                complete(
+                output_completions(
                     g
                     for g in available_goals
                     if g.startswith(comp.last_word_to_point)
@@ -209,7 +271,7 @@ def main() -> None:
                 for target_addr, _ in peek_targets
                 if target_addr.startswith(desired_prefix)
             )
-            complete(
+            output_completions(
                 target_addr.split(":", 1)[1]
                 for target_addr in completion_targets
             )
