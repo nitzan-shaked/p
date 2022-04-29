@@ -1,0 +1,27 @@
+[flake8]
+
+exclude =
+	.git,
+	.mypy_cache,
+	.venv,
+	__pycache__,
+	plz-out
+
+max-line-length = 100
+
+ignore =
+	E201,	# whitespace after '('
+	E202,	# whitespace before '('
+	E221,	# multiple spaces before operator
+	E222,	# multiple spaces after operator
+	E241,	# multiple spaces after ','
+	E272,	# multiple spaces before keyword
+	E266,	# too many leading '#' for block comment
+	E302,	# expected 2 blank lines, found 1
+	E305,	# expected 2 blank lines after class or function definition, found 1
+	E402,	# module-level import not at top of file
+	E701,	# multiple statements on one line (colon)
+	E704,	# multiple statements on one line (def)
+	E741,	# ambiguous variable name
+	W503,	# line break before binary operator
+	W504,	# line break after binary operator
