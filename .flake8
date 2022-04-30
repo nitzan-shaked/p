@@ -3,9 +3,7 @@
 exclude =
 	.git,
 	.mypy_cache,
-	.venv,
 	__pycache__,
-	plz-out
 
 max-line-length = 100
 
