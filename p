@@ -177,7 +177,7 @@ class PantsCtx:
 ##
 ###############################################################################
 
-COMPLETE_GOAL = False
+COMPLETE_GOAL = True
 
 
 def shim_rewrite_arg(arg_str: str, ctx: PantsCtx) -> str:
@@ -202,13 +202,10 @@ def output_completions(strs: Iterable[str]) -> None:
 
 def main() -> None:
 
-    prog_name = Path(sys.argv[0]).name
-    do_shim = prog_name == "p"
-    do_complete = prog_name == "p_complete"
-
+    do_complete = "COMP_LINE" in os.environ and "COMP_POINT" in os.environ
     pants = PantsCtx(do_complete=do_complete)
 
-    if do_shim:
+    if not do_complete:
         pants_args = tuple(
             shim_rewrite_arg(arg_str, pants)
             for arg_str in sys.argv[1:]
@@ -218,63 +215,62 @@ def main() -> None:
         os.chdir(str(pants.repo_root))
         os.execl(pants.pants_bin_name, pants.pants_bin_name, *pants_args)
 
-    if do_complete:
-        comp = CompCtx()
+    comp = CompCtx()
 
-        if COMPLETE_GOAL:
-            help_all_proc = pants.pants("help-all")
-            if help_all_proc.returncode != 0:
-                pants.fatal("help-all returned rc", help_all_proc.returncode)
-            help_all_json = json.loads(help_all_proc.stdout)
-            name_to_goal_info: Mapping[str, Any] = help_all_json["name_to_goal_info"]
-            assert isinstance(name_to_goal_info, Mapping)
+    if COMPLETE_GOAL:
+        help_all_proc = pants.pants("help-all")
+        if help_all_proc.returncode != 0:
+            pants.fatal("help-all returned rc", help_all_proc.returncode)
+        help_all_json = json.loads(help_all_proc.stdout)
+        name_to_goal_info: Mapping[str, Any] = help_all_json["name_to_goal_info"]
+        assert isinstance(name_to_goal_info, Mapping)
 
-            goal: str | None = None
-            available_goals = set(name_to_goal_info.keys())
-            for arg_str in comp.comp_words:
-                if goal is None and arg_str in available_goals:
-                    goal = arg_str
+        goal: str | None = None
+        available_goals = set(name_to_goal_info.keys())
+        for arg_str in comp.comp_words:
+            if goal is None and arg_str in available_goals:
+                goal = arg_str
 
-            # complete goal?
-            if goal is None and comp.point_is_past_end_of_word:
-                output_completions(available_goals)
+        # complete goal?
+        if goal is None and comp.point_is_past_end_of_word:
+            output_completions(available_goals)
 
-            if (
-                goal is None
-                and comp.point_is_exactly_at_end_of_word
-                and not comp.last_word_to_point.startswith(("-", "/", "."))
-                and ":" not in comp.last_word_to_point
-                and "/" not in comp.last_word_to_point
-            ):
-                output_completions(
-                    g
-                    for g in available_goals
-                    if g.startswith(comp.last_word_to_point)
-                )
-
-        # complete target name?
-        if comp.point_is_exactly_at_end_of_word and ":" in comp.last_word_to_point:
-            repo_rel_path, target_name = pants.parse_rel_target(comp.last_word_to_point)
-            if not (pants.repo_root / repo_rel_path / "BUILD").is_file():
-                pants.fatal(f"no BUILD in {pants.repo_root / repo_rel_path}")
-            peek_proc = pants.pants("peek", f"{repo_rel_path}:")
-            if peek_proc.returncode != 0:
-                pants.fatal("peek returned rc", peek_proc.returncode)
-            peek_json = json.loads(peek_proc.stdout)
-            peek_targets = tuple(
-                (str(j["address"]), str(j["target_type"]))
-                for j in peek_json
-            )
-            desired_prefix = f"{repo_rel_path}:{target_name}"
-            completion_targets = (
-                target_addr
-                for target_addr, _ in peek_targets
-                if target_addr.startswith(desired_prefix)
-            )
+        if (
+            goal is None
+            and comp.point_is_exactly_at_end_of_word
+            and not comp.last_word_to_point.startswith(("-", "/", "."))
+            and ":" not in comp.last_word_to_point
+            and "/" not in comp.last_word_to_point
+        ):
             output_completions(
-                target_addr.split(":", 1)[1]
-                for target_addr in completion_targets
+                g
+                for g in available_goals
+                if g.startswith(comp.last_word_to_point)
             )
+
+    # complete target name?
+    if comp.point_is_exactly_at_end_of_word and ":" in comp.last_word_to_point:
+        repo_rel_path, target_name = pants.parse_rel_target(comp.last_word_to_point)
+        if not (pants.repo_root / repo_rel_path / "BUILD").is_file():
+            pants.fatal(f"no BUILD in {pants.repo_root / repo_rel_path}")
+        peek_proc = pants.pants("peek", f"{repo_rel_path}:")
+        if peek_proc.returncode != 0:
+            pants.fatal("peek returned rc", peek_proc.returncode)
+        peek_json = json.loads(peek_proc.stdout)
+        peek_targets = tuple(
+            (str(j["address"]), str(j["target_type"]))
+            for j in peek_json
+        )
+        desired_prefix = f"{repo_rel_path}:{target_name}"
+        completion_targets = (
+            target_addr
+            for target_addr, _ in peek_targets
+            if target_addr.startswith(desired_prefix)
+        )
+        output_completions(
+            target_addr.split(":", 1)[1]
+            for target_addr in completion_targets
+        )
 
 
 if __name__ == "__main__":
