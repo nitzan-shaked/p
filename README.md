@@ -9,6 +9,9 @@ and it is with that hope that I'm writing this.
 `p` is a Pants2 auto-complete script as well as a wrapper for pants that
 allows specifying cwd-relative (as opposed to repo-root relative) targets.
 
+`p` completes global options, goal names, goal-specific option names, and
+relative, absolute and `//`-form target names.
+
 An example, worth ~1K words:
 
 ``` bash
@@ -38,9 +41,23 @@ lib    tests
 ~/my_repo/utils $ p test :lib
 ```
 
-We see that TAB completes goal names as well as target names. It also
-understands addresses beginning with `//` (e.g. `//utils:l<TAB>`) and relative
-addresses (e.g. `../graphs:<TAB>`).
+And also:
+
+``` bash
+~/my_repo/utils $ p --co<TAB>
+--colors                 --loop                   --no-process-cleanup     --remote-cache-write
+--concurrent             --no-colors              --no-remote-cache-read   --remote-execution
+--dynamic-ui             --no-concurrent          --no-remote-cache-write  --spec-files
+--dynamic-ui-renderer    --no-dynamic-ui          --no-remote-execution    --tag
+--exclude-target-regexp  --no-local-cache         --pantsd
+--level                  --no-loop                --process-cleanup
+--local-cache            --no-pantsd              --remote-cache-read
+~/my_repo/utils $ p test --<TAB>
+--debug             --force             --no-force          --no-use-coverage   --output
+--extra-env-vars    --no-debug          --no-open-coverage  --open-coverage     --use-coverage
+```
+
+So `p` completes context-specific as well as global options.
 
 ## Installing
 
@@ -53,6 +70,14 @@ complete -o default -C p p
 
 (obviously if you want to test it in the same shell session you'll need a
 one-time `source ~/.bashrc`)
+
+## Hacking configutaion
+
+Look inside `p` to set `COMPLETE_GOAL`, `COMPLETE_OPTIONS`,
+`COMPLETE_ADVANCED_OPTIONS` and `COMPLETE_TARGETS`. (see below for why you might
+want to edit those)
+
+These will eventually, obviously, move to env / some-rc-file.
 
 ## Completing goal names
 
@@ -72,9 +97,6 @@ love some feedback. I am currently thinking of:
 * disable goal name completion altogether; people may just not use it much (?)
 
 ## Completion TODO
-
-Currently only goal names and target names are completed. If folks find it
-useful a "goal options" completion (e.g. `--test-use-coverage`) can be added.
 
 `p` could try to be smart about which target names to offer when completing
 target names. E.g. `p` might only propose binary targets if what you typed
